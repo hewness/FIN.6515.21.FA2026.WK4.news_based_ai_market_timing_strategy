@@ -741,29 +741,53 @@ def table(labels, rows):
     return out
 
 
-def metric_rows(labels, stats):
-    m = lambda l: stats[l]
-    return [
-        ("Observations (days)", ["%d" % m(l)["n"] for l in labels]),
-        ("Total return", [fmt_pct(m(l)["total"]) for l in labels]),
-        ("Annualized return (geometric)", [fmt_pct(m(l)["ann_ret"]) for l in labels]),
-        ("Annualized volatility", ["%.2f%%" % (m(l)["ann_vol"] * 100) for l in labels]),
-        ("Sharpe (excess, annualized)", [fmt_ratio(m(l)["sharpe"]) for l in labels]),
-        ("Sortino (annualized)", [fmt_ratio(m(l)["sortino"]) for l in labels]),
-        ("Maximum drawdown", [fmt_pct(m(l)["maxdd"]) for l in labels]),
-        ("VaR 95%, historical †", [fmt_pct3(m(l)["var95"]) for l in labels]),
-        ("VaR 99%, historical †", [fmt_pct3(m(l)["var99"]) for l in labels]),
-        ("CVaR 95% (expected shortfall) †", [fmt_pct3(m(l)["cvar95"]) for l in labels]),
-        ("CVaR 99% (expected shortfall) †", [fmt_pct3(m(l)["cvar99"]) for l in labels]),
-        ("Win rate, days in position",
-         ["%.1f%% (%d/%d)" % (100.0 * m(l)["wins_in_pos"] / m(l)["n_in_pos"]
-                              if m(l)["n_in_pos"] else 0.0,
-                              m(l)["wins_in_pos"], m(l)["n_in_pos"]) for l in labels]),
-        ("Win rate, all days",
-         ["%.1f%% (%d/%d)" % (100.0 * m(l)["wins"] / m(l)["n"], m(l)["wins"], m(l)["n"])
-          for l in labels]),
-        ("Flat days (position = 0)", ["%d" % m(l)["flats"] for l in labels]),
-    ]
+# Each metric is defined once, as a function of one strategy's stats dict, so
+# the gross and net columns of the combined table are rendered by identical
+# code and cannot drift apart in formatting. Adding a metric touches one place.
+RETURN_METRICS = [
+    ("Total return", lambda s: fmt_pct(s["total"])),
+    ("Annualized return (geometric)", lambda s: fmt_pct(s["ann_ret"])),
+    ("Annualized volatility", lambda s: "%.2f%%" % (s["ann_vol"] * 100)),
+    ("Sharpe (excess, annualized)", lambda s: fmt_ratio(s["sharpe"])),
+    ("Sortino (annualized)", lambda s: fmt_ratio(s["sortino"])),
+    ("Maximum drawdown", lambda s: fmt_pct(s["maxdd"])),
+    ("VaR 95%, historical \u2020", lambda s: fmt_pct3(s["var95"])),
+    ("VaR 99%, historical \u2020", lambda s: fmt_pct3(s["var99"])),
+    ("CVaR 95% (expected shortfall) \u2020", lambda s: fmt_pct3(s["cvar95"])),
+    ("CVaR 99% (expected shortfall) \u2020", lambda s: fmt_pct3(s["cvar99"])),
+    ("Win rate, days in position", lambda s: "%.1f%%" % (
+        100.0 * s["wins_in_pos"] / s["n_in_pos"] if s["n_in_pos"] else 0.0)),
+    ("Win rate, all days", lambda s: "%.1f%%" % (100.0 * s["wins"] / s["n"])),
+]
+
+
+def combined_table(labels, gross, net):
+    """One table, each strategy's gross and net columns adjacent.
+
+    Previously these were two tables with identical row order, so reading the
+    effect of costs on any figure meant holding a number in your head and
+    scrolling to its counterpart. Pairing the columns puts that comparison in
+    the gap between two adjacent cells, which is where it is actually made.
+
+    Markdown has no column grouping, so the pairing is carried by repeating
+    the strategy name in both headers and breaking the qualifier onto a second
+    line. Rows carrying no return information -- observation and flat-day
+    counts, which are identical by construction on both sides -- are not
+    duplicated here; they live in the activity table, which is where position
+    statistics belong.
+    """
+    head, sep = ["Metric"], ["---"]
+    for l in labels:
+        short = _esc(SHORT.get(l, l))
+        head += ["%s<br>gross" % short, "%s<br>net" % short]
+        sep += ["---:", "---:"]
+    out = ["| " + " | ".join(head) + " |", "|" + "|".join(sep) + "|"]
+    for name, fmt in RETURN_METRICS:
+        cells = []
+        for l in labels:
+            cells += [fmt(gross[l]), fmt(net[l])]
+        out.append("| " + _esc(name) + " | " + " | ".join(cells) + " |")
+    return out
 
 
 # The appendix below is deliberately STATIC prose, unlike build_findings(),
@@ -1154,9 +1178,14 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
         L.extend(build_findings(labels, gross, net, turn, costs, by, rf,
                                 args, dates))
 
-    L.append("## Gross returns (before trading costs)")
+    L.append("## Performance metrics \u2014 gross vs net")
     L.append("")
-    L.extend(table(labels, metric_rows(labels, gross)))
+    L.append("Each strategy occupies two columns: **gross** before trading "
+             "costs and **net** after them. The difference between an "
+             "adjacent pair is what trading the strategy costs on that "
+             "metric.")
+    L.append("")
+    L.extend(combined_table(labels, gross, net))
     L.append("")
     if degenerate:
         L.append("† At n = %d both confidence levels select the same order "
@@ -1164,10 +1193,6 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
                  % (n, gross[labels[0]]["k95"]))
         L.append("")
 
-    L.append("## Net returns (after trading costs)")
-    L.append("")
-    L.extend(table(labels, metric_rows(labels, net)))
-    L.append("")
     figure("equity", "Net cumulative return and drawdown",
            "Growth of $1 after trading costs (top) and drawdown from the "
            "running peak (bottom), both on the net series tabulated above. "
@@ -1179,6 +1204,8 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
     L.append("## Trading activity and cost")
     L.append("")
     act = [
+        ("Observations (days)", ["%d" % net[l]["n"] for l in labels]),
+        ("Flat days (position = 0)", ["%d" % net[l]["flats"] for l in labels]),
         ("Total cost paid (sum of daily)", ["%.4f%%" % (costs[l] * 100) for l in labels]),
         ("Gross − net (total return)",
          ["%.2f pp" % ((gross[l]["total"] - net[l]["total"]) * 100) for l in labels]),
@@ -1259,7 +1286,9 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
              "deliberately held no position. Standing aside on a neutral read is "
              "not a loss, but a strict `return > 0` test scores it as one. Flat "
              "days are counted from `Position == 0`, not `return == 0`, so the "
-             "gross and net tables share a denominator.")
+             "gross and net columns share a denominator. The denominators "
+             "themselves are the observation and flat-day counts in the "
+             "activity table: days in position = observations − flat days.")
     L.append("- **Maximum drawdown** is close-to-close on the strategy's own "
              "equity curve and understates intraday drawdown.")
     L.append("- Contrarian variants are **not** the exact negative of their parent. "
@@ -1449,7 +1478,7 @@ def main(argv=None):
 
     if all(costs[l] == 0.0 for l in labels):
         log.warning("every cost is zero -- this CSV was produced with --no-costs, "
-                    "so the gross and net tables are identical by construction")
+                    "so the gross and net columns are identical by construction")
 
     charts = make_charts(by, labels, dates, args)
 

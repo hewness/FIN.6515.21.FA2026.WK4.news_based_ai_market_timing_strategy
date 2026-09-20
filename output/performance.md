@@ -49,43 +49,24 @@ Everything in this section is computed from the tables below, not written alongs
 
    172 of 243 days (71%) fall on or before 2026-05-31 and are inside the model's training data, so for most of this sample the model may be recalling outcomes rather than forecasting them. Splitting there: LLM Direction returns +21.40% before the cutoff and **+8.80% after** it, at a post-cutoff Sharpe of 2.09 against 1.98 before, while the Benchmark returned -0.22% over the same post-cutoff stretch. The edge persisting out of sample is the strongest evidence here that it is not pure memorisation — but 71 days carry a Sharpe standard error of about ±1.88, so that post-cutoff figure sits only 1.1 standard errors from zero and settles nothing on its own. This is the single largest open question in the report.
 
-## Gross returns (before trading costs)
+## Performance metrics — gross vs net
 
-| Metric | Benchmark | Direction | Direction (C) | Sentiment | Sentiment (C) |
-|---|---:|---:|---:|---:|---:|
-| Observations (days) | 243 | 243 | 243 | 243 | 243 |
-| Total return | +13.02% | +34.79% | -27.01% | +4.51% | -4.52% |
-| Annualized return (geometric) | +13.53% | +36.29% | -27.86% | +4.68% | -4.68% |
-| Annualized volatility | 13.03% | 12.90% | 12.90% | 4.69% | 4.69% |
-| Sharpe (excess, annualized) | 0.75 | 2.18 | -2.76 | 0.20 | -1.80 |
-| Sortino (annualized) | 1.51 | 4.01 | -3.08 | 1.52 | -1.32 |
-| Maximum drawdown | -9.10% | -7.89% | -28.87% | -4.65% | -4.98% |
-| VaR 95%, historical † | -1.436% | -1.159% | -1.547% | -0.434% | -0.490% |
-| VaR 99%, historical † | -2.063% | -1.741% | -2.508% | -0.707% | -0.983% |
-| CVaR 95% (expected shortfall) † | -1.786% | -1.548% | -1.898% | -0.658% | -0.739% |
-| CVaR 99% (expected shortfall) † | -2.473% | -2.239% | -2.621% | -1.037% | -1.187% |
-| Win rate, days in position | 53.9% (131/243) | 58.0% (141/243) | 42.0% (102/243) | 55.4% (123/222) | 44.6% (99/222) |
-| Win rate, all days | 53.9% (131/243) | 58.0% (141/243) | 42.0% (102/243) | 50.6% (123/243) | 40.7% (99/243) |
-| Flat days (position = 0) | 0 | 0 | 0 | 21 | 21 |
+Each strategy occupies two columns: **gross** before trading costs and **net** after them. The difference between an adjacent pair is what trading the strategy costs on that metric.
 
-## Net returns (after trading costs)
-
-| Metric | Benchmark | Direction | Direction (C) | Sentiment | Sentiment (C) |
-|---|---:|---:|---:|---:|---:|
-| Observations (days) | 243 | 243 | 243 | 243 | 243 |
-| Total return | +12.90% | +32.08% | -28.52% | +3.70% | -5.26% |
-| Annualized return (geometric) | +13.41% | +33.45% | -29.40% | +3.84% | -5.45% |
-| Annualized volatility | 13.03% | 12.89% | 12.92% | 4.69% | 4.69% |
-| Sharpe (excess, annualized) | 0.74 | 2.01 | -2.92 | 0.03 | -1.97 |
-| Sortino (annualized) | 1.50 | 3.72 | -3.25 | 1.25 | -1.54 |
-| Maximum drawdown | -9.11% | -8.26% | -30.29% | -4.93% | -5.65% |
-| VaR 95%, historical † | -1.437% | -1.174% | -1.548% | -0.440% | -0.496% |
-| VaR 99%, historical † | -2.063% | -1.741% | -2.509% | -0.713% | -0.990% |
-| CVaR 95% (expected shortfall) † | -1.786% | -1.557% | -1.914% | -0.662% | -0.745% |
-| CVaR 99% (expected shortfall) † | -2.473% | -2.246% | -2.635% | -1.042% | -1.195% |
-| Win rate, days in position | 53.9% (131/243) | 56.8% (138/243) | 42.0% (102/243) | 54.5% (121/222) | 43.2% (96/222) |
-| Win rate, all days | 53.9% (131/243) | 56.8% (138/243) | 42.0% (102/243) | 49.8% (121/243) | 39.5% (96/243) |
-| Flat days (position = 0) | 0 | 0 | 0 | 21 | 21 |
+| Metric | Benchmark<br>gross | Benchmark<br>net | Direction<br>gross | Direction<br>net | Direction (C)<br>gross | Direction (C)<br>net | Sentiment<br>gross | Sentiment<br>net | Sentiment (C)<br>gross | Sentiment (C)<br>net |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Total return | +13.02% | +12.90% | +34.79% | +32.08% | -27.01% | -28.52% | +4.51% | +3.70% | -4.52% | -5.26% |
+| Annualized return (geometric) | +13.53% | +13.41% | +36.29% | +33.45% | -27.86% | -29.40% | +4.68% | +3.84% | -4.68% | -5.45% |
+| Annualized volatility | 13.03% | 13.03% | 12.90% | 12.89% | 12.90% | 12.92% | 4.69% | 4.69% | 4.69% | 4.69% |
+| Sharpe (excess, annualized) | 0.75 | 0.74 | 2.18 | 2.01 | -2.76 | -2.92 | 0.20 | 0.03 | -1.80 | -1.97 |
+| Sortino (annualized) | 1.51 | 1.50 | 4.01 | 3.72 | -3.08 | -3.25 | 1.52 | 1.25 | -1.32 | -1.54 |
+| Maximum drawdown | -9.10% | -9.11% | -7.89% | -8.26% | -28.87% | -30.29% | -4.65% | -4.93% | -4.98% | -5.65% |
+| VaR 95%, historical † | -1.436% | -1.437% | -1.159% | -1.174% | -1.547% | -1.548% | -0.434% | -0.440% | -0.490% | -0.496% |
+| VaR 99%, historical † | -2.063% | -2.063% | -1.741% | -1.741% | -2.508% | -2.509% | -0.707% | -0.713% | -0.983% | -0.990% |
+| CVaR 95% (expected shortfall) † | -1.786% | -1.786% | -1.548% | -1.557% | -1.898% | -1.914% | -0.658% | -0.662% | -0.739% | -0.745% |
+| CVaR 99% (expected shortfall) † | -2.473% | -2.473% | -2.239% | -2.246% | -2.621% | -2.635% | -1.037% | -1.042% | -1.187% | -1.195% |
+| Win rate, days in position | 53.9% | 53.9% | 58.0% | 56.8% | 42.0% | 42.0% | 55.4% | 54.5% | 44.6% | 43.2% |
+| Win rate, all days | 53.9% | 53.9% | 58.0% | 56.8% | 42.0% | 42.0% | 50.6% | 49.8% | 40.7% | 39.5% |
 
 ![Net cumulative return and drawdown](charts/equity_drawdown.png)
 
@@ -95,6 +76,8 @@ Everything in this section is computed from the tables below, not written alongs
 
 | Metric | Benchmark | Direction | Direction (C) | Sentiment | Sentiment (C) |
 |---|---:|---:|---:|---:|---:|
+| Observations (days) | 243 | 243 | 243 | 243 | 243 |
+| Flat days (position = 0) | 0 | 0 | 0 | 21 | 21 |
 | Total cost paid (sum of daily) | 0.1011% | 2.0344% | 2.0744% | 0.7806% | 0.7841% |
 | Gross − net (total return) | 0.11 pp | 2.71 pp | 1.50 pp | 0.81 pp | 0.75 pp |
 | Turnover (total, one-way units) | 1.00 | 191.00 | 191.00 | 74.00 | 74.00 |
@@ -127,7 +110,7 @@ The model states a `confidence` between 0 and 1 on every call, and **no strategy
 - **Sortino** uses a minimum acceptable return of **0%**. Downside deviation is `sqrt(Σ min(r−MAR, 0)² / n)` — divided by **n**, the full sample count, not by the number of losing days. The loser-count form discards loss-frequency information and is non-monotone: turning a losing day into a winning one could *raise* the denominator and *lower* the ratio.
   Because MAR = 0, Sortino's numerator is the mean **raw** return while Sharpe's is the mean **excess** return, so the two ratios are measured against different benchmarks and are not directly comparable. `--sortino-mar rf` makes them consistent.
 - A **negative Sharpe or Sortino ranks nothing**: once the numerator is negative, a larger denominator moves the ratio toward zero.
-- **Win rate, days in position** excludes days a strategy deliberately held no position. Standing aside on a neutral read is not a loss, but a strict `return > 0` test scores it as one. Flat days are counted from `Position == 0`, not `return == 0`, so the gross and net tables share a denominator.
+- **Win rate, days in position** excludes days a strategy deliberately held no position. Standing aside on a neutral read is not a loss, but a strict `return > 0` test scores it as one. Flat days are counted from `Position == 0`, not `return == 0`, so the gross and net columns share a denominator. The denominators themselves are the observation and flat-day counts in the activity table: days in position = observations − flat days.
 - **Maximum drawdown** is close-to-close on the strategy's own equity curve and understates intraday drawdown.
 - Contrarian variants are **not** the exact negative of their parent. Only the daily *gross* return negates; compounded totals do not, and costs are strictly positive on both sides.
 - A high Sharpe on a low-exposure strategy is low volatility, not necessarily skill — check the `Mean |position|` row.
