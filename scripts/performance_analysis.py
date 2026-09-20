@@ -44,7 +44,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, time, timezone
 from pathlib import Path
 
 # --- project layout -------------------------------------------------------
@@ -790,6 +790,221 @@ def combined_table(labels, gross, net):
     return out
 
 
+# --------------------------------------------------------------------------
+#  data provenance
+# --------------------------------------------------------------------------
+# Where each input came from, what it is used for, and -- computed from the
+# files themselves at report time -- what it actually covers. The descriptions
+# are static because a CSV cannot state its own provenance; every date range,
+# row count and gap beside them is measured, so a stale range cannot survive a
+# rerun on different data.
+
+# Sessions closing at 1:00 PM ET instead of 4:00. Copied from
+# predict_positions.py:80 -- the same standalone-by-design duplication as the
+# metric helpers. If one list changes, change both.
+EARLY_CLOSE_DAYS = {"2025-07-03", "2025-11-28", "2025-12-24",
+                    "2026-07-02", "2026-11-27", "2026-12-24"}
+REGULAR_CLOSE_ET = time(16, 0)
+EARLY_CLOSE_ET = time(13, 0)
+
+
+def _span(path, datekey):
+    """(rows, first, last) for a CSV, or None if it is absent or unreadable."""
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            days = []
+            n = 0
+            for row in csv.DictReader(fh):
+                n += 1
+                v = row.get(datekey)
+                if v:
+                    days.append(v)
+    except (OSError, csv.Error):
+        return None
+    if not n:
+        return None
+    return n, (min(days) if days else "?"), (max(days) if days else "?")
+
+
+def _headline_stats(path):
+    """Coverage of the headline corpus, including the point-in-time exclusion.
+
+    `seendate` is UTC; the cutoff is defined in ET, so the conversion has to
+    happen before the comparison. If the zone database is unavailable the
+    before/after split is reported as unknown rather than computed against the
+    wrong clock -- a wrong exclusion count here would misdescribe the single
+    most important filter in the pipeline.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except Exception:
+        et = None
+    try:
+        fh = open(path, newline="", encoding="utf-8")
+    except OSError:
+        return None
+    total = before = after = unparsed = 0
+    days = set()
+    with fh:
+        for row in csv.DictReader(fh):
+            total += 1
+            raw = row.get("seendate") or ""
+            try:
+                utc = datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                unparsed += 1
+                continue
+            if et is None:
+                continue
+            local = utc.astimezone(et)
+            day = local.date().isoformat()
+            days.add(day)
+            cutoff = EARLY_CLOSE_ET if day in EARLY_CLOSE_DAYS else REGULAR_CLOSE_ET
+            if local.time() >= cutoff:
+                after += 1
+            else:
+                before += 1
+    return {"total": total, "before": before, "after": after, "unparsed": unparsed,
+            "days": sorted(days), "tz": et is not None}
+
+
+def _empty_days(path):
+    """Days the fetcher recorded as genuinely returning no headlines."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return [l.strip() for l in fh
+                    if l.strip() and not l.lstrip().startswith("#")]
+    except OSError:
+        return None
+
+
+def build_data_notes(args, dates, rf_note):
+    """Provenance section: sources, roles, coverage, and every known gap."""
+    L = ["## Data sources and coverage", ""]
+    L.append("Row counts and date ranges below are measured from the files at "
+             "report time, not recorded by hand.")
+    L.append("")
+
+    rows = []
+    hs = _headline_stats(args.headlines)
+    if hs and hs["days"]:
+        rows.append((args.headlines,
+                     "GDELT 2.0 DOC API (`artlist`, `domainis:cnbc.com`)",
+                     "The headlines each prediction was made from.",
+                     "%s .. %s (%d days)" % (hs["days"][0], hs["days"][-1], len(hs["days"])),
+                     "{:,}".format(hs["total"])))
+    elif hs:
+        rows.append((args.headlines, "GDELT 2.0 DOC API",
+                     "The headlines each prediction was made from.",
+                     "unknown (no zone database)", "%d" % hs["total"]))
+
+    for path, key, source, role in (
+        (args.predictions, "predicts_for", "`claude-opus-5` via the Anthropic API",
+         "One long/short call, sentiment score and confidence per trading day. "
+         "Coverage is by `predicts_for`, the day each call applies to, not the "
+         "session it was made on."),
+        (args.returns, "date",
+         "FRED `SP500` (S&P 500 close, a PRICE index) and `DGS1MO` "
+         "(1-month Treasury constant maturity yield)",
+         "Realised returns that positions are scored against, and the "
+         "risk-free rate subtracted for Sharpe."),
+        (args.strategy_csv, "Date",
+         "Generated by `scripts/predict_positions.py --backtest-only`",
+         "Per-day positions, returns and costs. The direct input to this report."),
+    ):
+        sp = _span(path, key)
+        if sp:
+            rows.append((path, source, role, "%s .. %s" % (sp[1], sp[2]),
+                         "{:,}".format(sp[0])))
+
+    if rows:
+        L.append("| File | Source | Used for | Coverage | Rows |")
+        L.append("|---|---|---|---|---:|")
+        for path, source, role, cover, n in rows:
+            L.append("| `%s` | %s | %s | %s | %s |"
+                     % (_esc(os.path.basename(path)), _esc(source), _esc(role),
+                        _esc(cover), n))
+        L.append("")
+
+    # --- why the three windows do not line up ------------------------------
+    L.append("### Why the windows differ")
+    L.append("")
+    if hs and hs["days"]:
+        L.append("- **Headlines** span %s to %s, wider at both ends than the "
+                 "backtest. A prediction is made from the *prior* session's "
+                 "headlines, so the first day of headlines produces no scored "
+                 "day of its own."
+                 % (hs["days"][0], hs["days"][-1]))
+    L.append("- **Predictions** are dated by the session whose headlines were "
+             "read; the `predicts_for` column carries the day they apply to. "
+             "The backtest is indexed on the latter.")
+    L.append("- **The backtest** runs %s to %s (%d days). It stops short of the "
+             "last headline because the final prediction still needs a "
+             "following day's return to be scored against."
+             % (dates[0], dates[-1], len(dates)))
+    L.append("")
+
+    # --- gaps, cutoffs, exclusions -----------------------------------------
+    L.append("### Gaps, cutoffs and exclusions")
+    L.append("")
+    if hs and hs["tz"] and hs["total"]:
+        L.append("- **%s of %s headlines (%.1f%%) were excluded by the "
+                 "point-in-time filter** — they carry a `seendate` at or after "
+                 "the 4:00 PM ET close (1:00 PM on the six early-close "
+                 "sessions), so a trade placed that day could not have been "
+                 "informed by them. Only the remaining %s reached the model. "
+                 "This is the largest single exclusion in the pipeline and the "
+                 "one that keeps the backtest honest."
+                 % ("{:,}".format(hs["after"]), "{:,}".format(hs["total"]),
+                    100.0 * hs["after"] / hs["total"], "{:,}".format(hs["before"])))
+    if hs and hs["unparsed"]:
+        L.append("- **%d headline(s) had an unparseable `seendate`** and were "
+                 "skipped." % hs["unparsed"])
+    empties = _empty_days(args.empty_log)
+    if empties is not None:
+        L.append("- **%d day(s) are recorded in `%s` as returning no headlines "
+                 "at all.** These are logged rather than silently treated as "
+                 "quiet news days, because a collection failure and a genuinely "
+                 "empty day are not the same thing and must not become the same "
+                 "row." % (len(empties), _esc(os.path.basename(args.empty_log))))
+    L.append("- **Risk-free rate: %s.** The gaps are structural — the NYSE "
+             "trades on Columbus Day and Veterans Day while the bond market is "
+             "shut, so FRED publishes no `DGS1MO` quote. The prior session's "
+             "rate is carried forward; the two rates either side of each gap "
+             "differ by less than 0.01%%/yr, so the substitution is very nearly "
+             "exact." % rf_note)
+    L.append("- **`SP500` is a price index, so every return here excludes "
+             "dividends** — roughly 1.2–1.5%/yr understated. It applies "
+             "identically to the strategies and the benchmark, so comparisons "
+             "between them are unaffected, but the absolute totals are each a "
+             "little low.")
+    ff = _span(args.ff_returns, "date") if getattr(args, "ff_returns", None) else None
+    if ff:
+        L.append("- **Ken French's `Mkt-RF` factor was NOT used**, though it is "
+                 "present in `data/`. It ends %s, %d rows covering only to that "
+                 "date, because the library is rebuilt from a monthly CRSP "
+                 "vintage and runs roughly seven weeks in arrears — it stops "
+                 "short of the backtest end. It is also an *already-excess*, "
+                 "dividend-inclusive, whole-CRSP series, where these strategies "
+                 "were scored on total returns of the S&P 500; "
+                 "`performance_analysis.py` refuses it for that reason."
+                 % (ff[2], ff[0]))
+    cut = args.training_cutoff
+    if cut and cut.lower() != "none":
+        inside = sum(1 for d in dates if d <= cut)
+        L.append("- **%d of %d days (%.0f%%) fall on or before %s**, the "
+                 "assistant's training cutoff, and are therefore inside the "
+                 "model's training data. See the Findings section."
+                 % (inside, len(dates), 100.0 * inside / len(dates), cut))
+    L.append("- **`seendate` is when GDELT first indexed an article**, which is "
+             "at or after publication, never before. Filtering on it is "
+             "therefore conservative in the safe direction: it can exclude a "
+             "borderline article, but it cannot admit one the trader could not "
+             "have seen.")
+    L.append("")
+    return L
+
 # The appendix below is deliberately STATIC prose, unlike build_findings(),
 # which computes every figure it quotes. This is a project retrospective -- an
 # account of what went wrong while acquiring the data and what would have
@@ -1306,6 +1521,8 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
         L.append("- \\* `+inf` means no day fell at or below the target. That is a "
                  "small-sample artifact, not an unbounded ratio.")
     L.append("")
+    if not args.no_data_notes:
+        L.extend(build_data_notes(args, dates, rf_note))
     if not args.no_appendix:
         L.append(DATA_ACQUISITION_NOTES.rstrip())
         L.append("")
@@ -1362,12 +1579,25 @@ def main(argv=None):
     g_fmt.add_argument("--title", default="Strategy performance")
     g_fmt.add_argument("--no-appendix", action="store_true",
                        help="omit the fixed data-acquisition retrospective")
+    g_fmt.add_argument("--no-data-notes", action="store_true",
+                       help="omit the data sources and coverage section")
 
     g_c = p.add_argument_group("charts (require matplotlib; skipped if absent)")
     g_c.add_argument("--no-charts", action="store_true",
                      help="write the report without figures")
     g_c.add_argument("--charts-dir", default=str(OUTPUT / "charts"),
                      help="directory for the PNGs (default: output/charts)")
+    g_io.add_argument("--headlines", default=str(DATA / "cnbc_headlines.csv"),
+                      help="headline corpus, for the coverage section "
+                           "(default: data/cnbc_headlines.csv)")
+    g_io.add_argument("--empty-log", default=str(DATA / "cnbc_year_empty.txt"),
+                      help="fetcher log of days that returned no headlines "
+                           "(default: data/cnbc_year_empty.txt)")
+    g_io.add_argument("--ff-returns",
+                      default=str(DATA / "mkt_rf_20250919-20260731.csv"),
+                      help="Fama/French Mkt-RF file, reported in the coverage "
+                           "section as an input that was NOT used")
+
     g_c.add_argument("--predictions", default=str(DATA / "predictions.csv"),
                      help="per-day LLM output, the only source of the "
                           "confidence column (default: data/predictions.csv)")
