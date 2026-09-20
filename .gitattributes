@@ -1,0 +1,5 @@
+# save_report() writes the report with an explicit LF newline, and the figures
+# are byte-identical across runs. Letting core.autocrlf rewrite either would
+# break both properties on checkout, so line endings are pinned here.
+* text=auto eol=lf
+*.png binary

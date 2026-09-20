@@ -1,0 +1,9 @@
+.anthropic_key
+*.csv
+__pycache__/
+
+# The data files ARE the deliverable here: without them the report in
+# output/ cannot be reproduced from a clone. They are small, plain text and
+# contain no credentials, so the blanket *.csv rule above is negated for
+# data/ only -- a stray CSV anywhere else stays ignored.
+!data/*.csv
