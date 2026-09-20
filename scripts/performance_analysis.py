@@ -714,6 +714,25 @@ def make_charts(by, labels, dates, args):
 #  report rendering
 # --------------------------------------------------------------------------
 
+def rel_path(path):
+    """A path as written in the report: relative to the project root, POSIX.
+
+    The report is committed and shared, so printing an absolute path would
+    publish the author's home directory along with the results. Anything
+    inside the project renders as `data/foo.csv`; anything outside it keeps
+    only its basename, for the same reason. The full location is still in
+    the run log on stderr, which is not committed.
+    """
+    try:
+        p = Path(path).resolve()
+    except (OSError, ValueError):
+        return os.path.basename(str(path))
+    try:
+        return p.relative_to(ROOT).as_posix()
+    except ValueError:
+        return p.name
+
+
 def _esc(s):
     return str(s).replace("|", "\\|")
 
@@ -923,7 +942,7 @@ def build_data_notes(args, dates, rf_note):
         L.append("|---|---|---|---|---:|")
         for path, source, role, cover, n in rows:
             L.append("| `%s` | %s | %s | %s | %s |"
-                     % (_esc(os.path.basename(path)), _esc(source), _esc(role),
+                     % (_esc(rel_path(path)), _esc(source), _esc(role),
                         _esc(cover), n))
         L.append("")
 
@@ -967,7 +986,7 @@ def build_data_notes(args, dates, rf_note):
                  "at all.** These are logged rather than silently treated as "
                  "quiet news days, because a collection failure and a genuinely "
                  "empty day are not the same thing and must not become the same "
-                 "row." % (len(empties), _esc(os.path.basename(args.empty_log))))
+                 "row." % (len(empties), _esc(rel_path(args.empty_log))))
     L.append("- **Risk-free rate: %s.** The gaps are structural — the NYSE "
              "trades on Columbus Day and Veterans Day while the bond market is "
              "shut, so FRED publishes no `DGS1MO` quote. The prior session's "
@@ -1341,8 +1360,8 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
     L.append("**%s .. %s — %d trading days — %d strategies**"
              % (dates[0], dates[-1], n, len(labels)))
     L.append("")
-    L.append("Source: `%s` (%d rows)." % (args.strategy_csv, n * len(labels)))
-    L.append("Risk-free: `%s`, `rf_daily`, %s." % (args.returns, rf_note))
+    L.append("Source: `%s` (%d rows)." % (rel_path(args.strategy_csv), n * len(labels)))
+    L.append("Risk-free: `%s`, `rf_daily`, %s." % (rel_path(args.returns), rf_note))
     if args.no_rf:
         L.append("")
         L.append("> **THIS REPORT WAS RUN WITH `--no-rf`.** Every Sharpe below "
@@ -1515,7 +1534,7 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
         L.append("- **Figures are drawn on net returns** and are regenerated "
                  "on every run; they are written to `%s`. Pass `--no-charts` "
                  "to skip them, which is also what happens automatically if "
-                 "matplotlib is not installed." % args.charts_dir)
+                 "matplotlib is not installed." % rel_path(args.charts_dir))
     if any(v == float("inf") or v == float("-inf")
            for d in (gross, net) for l in labels for v in (d[l]["sortino"],)):
         L.append("- \\* `+inf` means no day fell at or below the target. That is a "
