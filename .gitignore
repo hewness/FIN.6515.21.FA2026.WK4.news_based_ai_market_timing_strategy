@@ -7,3 +7,8 @@ __pycache__/
 # contain no credentials, so the blanket *.csv rule above is negated for
 # data/ only -- a stray CSV anywhere else stays ignored.
 !data/*.csv
+
+# Conversation exports (/export) reproduce the entire session, including the
+# name, email address and absolute home paths that were deliberately stripped
+# from the generated report. Local only -- never committed.
+*.log
