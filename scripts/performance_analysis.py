@@ -1457,6 +1457,13 @@ def main(argv=None):
                         dates, charts, by, rf)
 
     if args.stdout:
+        # The report contains en/em dashes and a Unicode minus, which a cp1252
+        # console cannot encode; without this, --stdout dies on Windows with
+        # UnicodeEncodeError while --out (UTF-8) works fine.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
         print(text)
     else:
         save_report(text, args.out)
