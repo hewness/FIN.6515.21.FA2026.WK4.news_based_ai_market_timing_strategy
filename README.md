@@ -76,8 +76,9 @@ Read these before treating the headline number as an edge.
   model's training cutoff, so for most of the sample the model may be recalling
   outcomes rather than forecasting them. Splitting at the cutoff is mildly
   reassuring — the strategy earns +8.80% in the 71 post-cutoff days against a
-  flat market, at a Sharpe of 2.38 — but 71 days carries a Sharpe standard
-  error of about ±1.88, so that is not significant on its own.
+  flat market (the Benchmark returns −0.22%), at an excess Sharpe of 2.09
+  against 1.98 before the cutoff — but 71 days carries a Sharpe standard error
+  of about ±1.88, so that is not significant on its own.
 - **Long tilt does part of the work.** Mean signed position is +0.374 in a year
   the market rose. The short side is genuinely selective (the market fell 8.77%
   across the 76 short days), but the tilt is not nothing.

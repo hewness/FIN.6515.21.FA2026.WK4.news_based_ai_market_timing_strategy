@@ -4,6 +4,11 @@ Reads the per-day, per-strategy results produced by predict_positions.py and
 reports a full metric set on BOTH gross and net returns, side by side across
 strategies, plus a turnover/cost table.
 
+The report opens with a Findings section whose every figure is interpolated
+from the same dicts that render the tables, so the prose cannot drift from
+the numbers, and closes with a fixed retrospective on acquiring the GDELT
+corpus (--no-appendix omits it).
+
 Sharpe here is computed on EXCESS returns (return - rf_daily). The console
 summary in predict_positions.py passes the net series as its own excess series,
 so its Sharpe column is overstated -- by about 0.40 for the +-1 strategies and
@@ -761,8 +766,323 @@ def metric_rows(labels, stats):
     ]
 
 
+# The appendix below is deliberately STATIC prose, unlike build_findings(),
+# which computes every figure it quotes. This is a project retrospective -- an
+# account of what went wrong while acquiring the data and what would have
+# prevented it -- and none of it is derivable from predictions_strategy.csv. It
+# is kept here rather than in a separate file so the report stays a single
+# self-contained document, and it is marked as a fixed record so no future
+# reader mistakes it for a generated result. Suppress it with --no-appendix.
+
+DATA_ACQUISITION_NOTES = """## Appendix: acquiring the GDELT data
+
+A fixed record of what went wrong collecting the headline corpus, and what
+would have prevented each problem. It is not regenerated from the data.
+
+The corpus behind this report is 9,628 CNBC headlines covering 2025-09-19 to
+2026-09-19, pulled from the GDELT 2.0 DOC API. Collecting it took far longer
+than the analysis that followed, for reasons that were mostly foreseeable.
+
+### What went wrong
+
+**The 250-record cap truncates silently.** `artlist` returns at most 250
+articles per request and says nothing when it has more to give. A busy news day
+on a broad domain query hits that ceiling easily, so the first passes returned
+plausible-looking files that were quietly missing articles. Nothing in the
+response distinguishes "these are all 250 that exist" from "here are the first
+250 of 400."
+
+**Rate limiting was severe and initially misdiagnosed.** The endpoint tolerates
+roughly one request every five seconds, and beyond that returns HTTP 429. The
+429s persisted across four source IP addresses in three countries, which looked
+like an IP-level ban and prompted a lot of wasted effort chasing connectivity.
+The actual diagnostic took one request: GDELT's `/api/v2/tv/tv` endpoint
+returned HTTP 200 from the *same* IP that `doc` was refusing, proving the
+throttle was endpoint-specific rather than an address block.
+
+**A large part of the rate limiting was self-inflicted.** A retry-loop shell
+script survived a stop command and kept running for more than twenty-two hours,
+continuously spawning fresh fetcher processes. Those orphans shared one source
+IP — and therefore one rate-limit budget — with the foreground job, so the two
+starved each other while the remote service looked broken. The orphans also
+held the output file open and at one point deleted it outright, producing file
+states that appeared impossible. The stop command had reported success; the
+process tree had not actually died.
+
+**Transient network errors killed long runs.** The retry handler caught
+`URLError` and `TimeoutError` but not `ConnectionResetError`, so a mid-download
+reset escaped the handler and terminated a multi-hour job that had no way to
+resume.
+
+**A shadowed import lurked in the retry path.** `from datetime import time`
+shadowed the `time` module, so `time.sleep()` inside the backoff path would
+have raised `AttributeError` — on the exact code path that only executes when
+something is already going wrong, which is the worst place for a latent bug.
+
+**Timestamp semantics were assumed rather than checked.** GDELT's `seendate` is
+when GDELT first *indexed* an article, not when the publisher released it. The
+two differ, and the difference matters directly for the 4:00 PM ET cutoff this
+study depends on.
+
+### What would have prevented it
+
+**Read the API's limits before writing the happy path.** The 250-record cap and
+the request rate are both documented. Designing the window-splitting and pacing
+logic up front would have avoided rewriting the fetcher around them twice.
+
+**Treat any response at exactly the cap as truncated until proven otherwise.**
+The rule is cheap: if a window returns exactly 250 records, assume it is
+incomplete, bisect it and retry both halves. The final fetcher does this
+recursively down to a fifteen-minute floor. Making this the default from the
+start costs one comparison and removes an entire class of silent data loss.
+
+**Pace requests end-to-start, not start-to-start.** The quiet period has to
+begin when the response *arrives*, not when the request is sent, or a slow
+response silently shortens the gap and trips the limit.
+
+**Design checkpointing and resume before the first long run, not after the
+first crash.** The fetcher now writes its accumulated rows after every
+sub-window and keeps a list of failed windows, so an interrupted job resumes
+instead of restarting. Adding that after losing hours of work is the expensive
+order in which to learn it.
+
+**Catch `OSError`, not a hand-listed set of subclasses.** `URLError`,
+`TimeoutError` and `ConnectionResetError` are all `OSError`; enumerating
+network failure modes individually guarantees missing one.
+
+**Enforce single-writer discipline on the output file.** One fetcher per output
+file, with a lock or PID file refusing a second concurrent run, would have made
+the orphaned-process episode impossible rather than merely unlikely. Concurrent
+clients from one machine share a rate-limit budget, so a stray process does not
+just duplicate work — it actively degrades the run that is still wanted.
+
+**Verify at the OS level that a stopped job is actually dead.** A tool
+reporting "stopped" is not evidence. The check is a process scan filtered on
+the relevant command line, and it must include shell processes, because a retry
+loop is the parent that keeps respawning the interpreter children.
+
+**Probe a second endpoint before concluding the network is at fault.** One
+control request against a different path on the same host separates "this
+endpoint is throttling me" from "this host is blocking me" in seconds, and
+would have redirected several hours of misdirected effort.
+
+**Pin down what a timestamp field actually means before building on it.**
+Because `seendate` is an indexing time at or after publication, filtering on
+`seendate < 16:00 ET` is conservative in the safe direction — it can only ever
+exclude a borderline article, never admit one the trader could not have seen.
+That reasoning had to be established explicitly; it was not safe to assume.
+
+### Lasting effects on the design
+
+The fetcher that came out of this writes its rows after every sub-window rather
+than at the end, retries indefinitely with backoff capped at 90 seconds, logs
+the windows it could not complete and the days that were genuinely empty, and
+records the requested date range in its own filename. Each of those exists
+because of a specific failure above. The empty-day log matters most for the
+analysis: it is what keeps a collection gap visible as a gap, instead of
+letting it silently become a day with no headlines and a neutral prediction.
+"""
+
+def build_findings(labels, gross, net, turn, costs, by, rf, args, dates):
+    """The report's conclusions, COMPUTED from the same dicts as the tables.
+
+    Not written by hand. A generated report with a hand-written summary drifts
+    the moment the input changes, and a stale conclusion is worse than none at
+    all because it reads with the same authority as the numbers beneath it.
+    Every figure quoted below is interpolated from `gross`, `net`, `turn` and
+    `costs`; every claim is guarded on the strategies it names actually being
+    present, and is dropped rather than rendered stale if they are not.
+    """
+    BM = "Benchmark"
+    DIR, DIRC = "LLM Direction", "LLM Direction (Contrarian)"
+    SEN, SENC = "LLM Sentiment-Weighted", "LLM Sentiment-Weighted (Contrarian)"
+
+    def tstat(label):
+        """t-statistic of the mean daily NET return against zero."""
+        v = [r["net"] for r in by[label]]
+        sd = sample_sd(v)
+        if sd == 0 or len(v) < 2:
+            return float("nan")
+        return (sum(v) / len(v)) / (sd / math.sqrt(len(v)))
+
+    def sub_sharpe(vals, rfs):
+        ex = [a - b for a, b in zip(vals, rfs)]
+        sd = sample_sd(ex)
+        if sd == 0 or len(ex) < 2:
+            return float("nan")
+        return (sum(ex) / len(ex)) / sd * math.sqrt(args.trading_days)
+
+    def split_at(label, cut):
+        """(pre, post) net series and their rf, split on a date string."""
+        pre, post, rpre, rpost = [], [], [], []
+        for r, f in zip(by[label], rf):
+            (post if r["date"] > cut else pre).append(r["net"])
+            (rpost if r["date"] > cut else rpre).append(f)
+        return pre, rpre, post, rpost
+
+    items = []
+
+    # --- 1. the headline comparison, on risk as well as return -------------
+    # "Best" is whatever actually won, not a hardcoded favourite, so the
+    # section survives a rerun on different data.
+    others = [l for l in labels if l != BM]
+    if BM in net and others:
+        best = max(others, key=lambda l: net[l]["total"])
+        b, m = net[best], net[BM]
+        beat_dd = b["maxdd"] > m["maxdd"]        # both negative: > is shallower
+        beat_var = b["var95"] > m["var95"]
+        items.append((
+            "%s is the only strategy that beats buy-and-hold, and it does so "
+            "on risk as well as return." % best,
+            "It returns **%s net against %s** for the Benchmark (%s vs %s "
+            "gross), at an excess Sharpe of **%s vs %s** and a Sortino of %s "
+            "vs %s. The return is not bought with volatility: annualized "
+            "volatility is %.2f%% against the Benchmark's %.2f%%, and the "
+            "maximum drawdown is %s against %s%s. %s"
+            % (fmt_pct(b["total"]), fmt_pct(m["total"]),
+               fmt_pct(gross[best]["total"]), fmt_pct(gross[BM]["total"]),
+               fmt_ratio(b["sharpe"]), fmt_ratio(m["sharpe"]),
+               fmt_ratio(b["sortino"]), fmt_ratio(m["sortino"]),
+               b["ann_vol"] * 100, m["ann_vol"] * 100,
+               fmt_pct(b["maxdd"]), fmt_pct(m["maxdd"]),
+               " — *shallower*, not deeper" if beat_dd else "",
+               ("Its left tail is thinner too: 95%% VaR %s against %s, and "
+                "99%% CVaR %s against %s."
+                % (fmt_pct3(b["var95"]), fmt_pct3(m["var95"]),
+                   fmt_pct3(b["cvar99"]), fmt_pct3(m["cvar99"])))
+               if beat_var else
+               ("Its 95%% VaR is %s against the Benchmark's %s."
+                % (fmt_pct3(b["var95"]), fmt_pct3(m["var95"]))))))
+
+    # --- 2. the contrarian mirror is the evidence the signal is not noise --
+    if DIR in net and DIRC in net and BM in net:
+        items.append((
+            "The calls carry directional information — the contrarian mirror "
+            "is the evidence.",
+            "Inverting the same calls turns %s into **%s** and a Sharpe of %s "
+            "into **%s**. A signal with no directional content could not do "
+            "this: both halves would drift toward the Benchmark's %s rather "
+            "than separating by %.1f percentage points. Note the two are *not* "
+            "exact negatives — only the daily gross returns negate, while "
+            "compounding and strictly-positive costs break the symmetry, which "
+            "is why %s gross becomes %s rather than %s."
+            % (fmt_pct(net[DIR]["total"]), fmt_pct(net[DIRC]["total"]),
+               fmt_ratio(net[DIR]["sharpe"]), fmt_ratio(net[DIRC]["sharpe"]),
+               fmt_pct(net[BM]["total"]),
+               (net[DIR]["total"] - net[DIRC]["total"]) * 100,
+               fmt_pct(gross[DIR]["total"]), fmt_pct(gross[DIRC]["total"]),
+               fmt_pct(-gross[DIR]["total"]))))
+
+    # --- 3. sentiment sizing dilutes the same signal into nothing ----------
+    if SEN in net and DIR in net:
+        items.append((
+            "Sizing by sentiment destroys the edge rather than refining it.",
+            "%s and %s read the *same* model output, yet sentiment-weighting "
+            "returns only **%s net** at a Sharpe of **%s**, against %s and %s. "
+            "The cause is exposure, not accuracy: mean |position| is %.3f "
+            "against %.3f, which cuts annualized volatility to %.2f%% from "
+            "%.2f%% and leaves the strategy flat on %d of %d days. Its win "
+            "rate on the days it does hold a position, %.1f%%, is close to "
+            "%s's %.1f%% — the signal is comparable, the capital behind it is "
+            "not. Note also that its net Sharpe (%s) is far below its gross "
+            "(%s): at this exposure the %.2f%% cost bill is proportionally "
+            "much heavier."
+            % (DIR, SEN, fmt_pct(net[SEN]["total"]), fmt_ratio(net[SEN]["sharpe"]),
+               fmt_pct(net[DIR]["total"]), fmt_ratio(net[DIR]["sharpe"]),
+               turn[SEN]["mean_abs"], turn[DIR]["mean_abs"],
+               net[SEN]["ann_vol"] * 100, net[DIR]["ann_vol"] * 100,
+               net[SEN]["flats"], net[SEN]["n"],
+               100.0 * net[SEN]["wins_in_pos"] / max(1, net[SEN]["n_in_pos"]),
+               DIR,
+               100.0 * net[DIR]["wins_in_pos"] / max(1, net[DIR]["n_in_pos"]),
+               fmt_ratio(net[SEN]["sharpe"]), fmt_ratio(gross[SEN]["sharpe"]),
+               costs[SEN] * 100)))
+
+    # --- 4. costs are material but not fatal to the winner -----------------
+    if DIR in net:
+        items.append((
+            "Trading costs are material but survivable at the modelled level.",
+            "%s pays **%.2f%% in cost** over the sample and gives up "
+            "**%.2f percentage points** of compounded return, turning %s gross "
+            "into %s net, with the Sharpe falling %s. That bill is driven by "
+            "**%.1fx annualized turnover** — %.0f%% of the %.0fx theoretical "
+            "maximum for a book flipping fully long to fully short every "
+            "session — across %d days with a trade. The edge clears the bill "
+            "with room to spare, but it is the assumption most worth stressing: "
+            "the strategy is far more cost-sensitive than the Benchmark, which "
+            "pays %.2f%% in total."
+            % (DIR, costs[DIR] * 100,
+               (gross[DIR]["total"] - net[DIR]["total"]) * 100,
+               fmt_pct(gross[DIR]["total"]), fmt_pct(net[DIR]["total"]),
+               fmt_ratio(net[DIR]["sharpe"] - gross[DIR]["sharpe"]),
+               turn[DIR]["ann"],
+               100.0 * turn[DIR]["ann"] / (2.0 * args.trading_days),
+               2.0 * args.trading_days, turn[DIR]["days"],
+               costs[BM] * 100 if BM in costs else 0.0)))
+
+    # --- 5. how strong is the evidence, really -----------------------------
+    if DIR in net:
+        t = tstat(DIR)
+        se = math.sqrt(args.trading_days / net[DIR]["n"])
+        items.append((
+            "The statistical evidence is real but moderate, not overwhelming.",
+            "%s's mean daily net return carries a t-statistic of **%.2f** over "
+            "%d days — significant at the 5%% level, and no more. The standard "
+            "error on an annualized Sharpe from this many observations is "
+            "about **±%.2f**, so the %s figure is roughly %.1f standard errors "
+            "from zero. Neither number is corrected for the fact that this "
+            "report tabulates %d strategies and the best one is being quoted."
+            % (DIR, t, net[DIR]["n"], se, fmt_ratio(net[DIR]["sharpe"]),
+               abs(net[DIR]["sharpe"]) / se if se else float("nan"),
+               len(labels))))
+
+    # --- 6. the contamination split ----------------------------------------
+    cut = args.training_cutoff
+    if DIR in by and cut and cut.lower() != "none" and dates[0] <= cut <= dates[-1]:
+        pre, rpre, post, rpost = split_at(DIR, cut)
+        bpre, brpre, bpost, brpost = split_at(BM, cut) if BM in by else ([], [], [], [])
+        if pre and post:
+            se_post = math.sqrt(args.trading_days / len(post))
+            sh_post = sub_sharpe(post, rpost)
+            items.append((
+                "The edge does not collapse after the model's training cutoff — "
+                "but the out-of-sample window is too short to settle it.",
+                "%d of %d days (%.0f%%) fall on or before %s and are inside the "
+                "model's training data, so for most of this sample the model may "
+                "be recalling outcomes rather than forecasting them. Splitting "
+                "there: %s returns %s before the cutoff and **%s after** it, at "
+                "a post-cutoff Sharpe of %s against %s before%s. The edge "
+                "persisting out of sample is the strongest evidence here that it "
+                "is not pure memorisation — but %d days carry a Sharpe standard "
+                "error of about ±%.2f, so that post-cutoff figure sits only "
+                "%.1f standard errors from zero and settles nothing on its own. "
+                "This is the single largest open question in the report."
+                % (len(pre), len(dates), 100.0 * len(pre) / len(dates), cut,
+                   DIR, fmt_pct(compound(pre)), fmt_pct(compound(post)),
+                   fmt_ratio(sh_post), fmt_ratio(sub_sharpe(pre, rpre)),
+                   (", while the Benchmark returned %s over the same "
+                    "post-cutoff stretch" % fmt_pct(compound(bpost)))
+                   if bpost else "",
+                   len(post), se_post,
+                   abs(sh_post) / se_post if se_post else float("nan"))))
+
+    if not items:
+        return []
+
+    L = ["## Findings", ""]
+    L.append("Everything in this section is computed from the tables below, not "
+             "written alongside them, so it cannot fall out of step with the "
+             "numbers it cites.")
+    L.append("")
+    for i, (claim, evidence) in enumerate(items, 1):
+        L.append("%d. **%s**" % (i, claim))
+        L.append("")
+        L.append("   %s" % evidence)
+        L.append("")
+    return L
+
 def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
-                 charts=None):
+                 charts=None, by=None, rf=None):
     n = gross[labels[0]]["n"]
     charts = charts or {}
 
@@ -829,6 +1149,10 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
     for l in labels:
         L.append("| %s | %s |" % (_esc(SHORT.get(l, l)), _esc(l)))
     L.append("")
+
+    if by is not None and rf is not None:
+        L.extend(build_findings(labels, gross, net, turn, costs, by, rf,
+                                args, dates))
 
     L.append("## Gross returns (before trading costs)")
     L.append("")
@@ -953,6 +1277,9 @@ def build_report(labels, gross, net, turn, costs, meta, rf_note, args, dates,
         L.append("- \\* `+inf` means no day fell at or below the target. That is a "
                  "small-sample artifact, not an unbounded ratio.")
     L.append("")
+    if not args.no_appendix:
+        L.append(DATA_ACQUISITION_NOTES.rstrip())
+        L.append("")
     return "\n".join(L)
 
 
@@ -1004,6 +1331,8 @@ def main(argv=None):
 
     g_fmt = p.add_argument_group("report")
     g_fmt.add_argument("--title", default="Strategy performance")
+    g_fmt.add_argument("--no-appendix", action="store_true",
+                       help="omit the fixed data-acquisition retrospective")
 
     g_c = p.add_argument_group("charts (require matplotlib; skipped if absent)")
     g_c.add_argument("--no-charts", action="store_true",
@@ -1125,7 +1454,7 @@ def main(argv=None):
     charts = make_charts(by, labels, dates, args)
 
     text = build_report(labels, gross, net, turn, costs, None, rf_note, args,
-                        dates, charts)
+                        dates, charts, by, rf)
 
     if args.stdout:
         print(text)

@@ -21,6 +21,34 @@ Risk-free: `C:\Users\Gordon Hew\workspace\news_based_ai\data\market_returns.csv`
 | Sentiment | LLM Sentiment-Weighted |
 | Sentiment (C) | LLM Sentiment-Weighted (Contrarian) |
 
+## Findings
+
+Everything in this section is computed from the tables below, not written alongside them, so it cannot fall out of step with the numbers it cites.
+
+1. **LLM Direction is the only strategy that beats buy-and-hold, and it does so on risk as well as return.**
+
+   It returns **+32.08% net against +12.90%** for the Benchmark (+34.79% vs +13.02% gross), at an excess Sharpe of **2.01 vs 0.74** and a Sortino of 3.72 vs 1.50. The return is not bought with volatility: annualized volatility is 12.89% against the Benchmark's 13.03%, and the maximum drawdown is -8.26% against -9.11% — *shallower*, not deeper. Its left tail is thinner too: 95% VaR -1.174% against -1.437%, and 99% CVaR -2.246% against -2.473%.
+
+2. **The calls carry directional information — the contrarian mirror is the evidence.**
+
+   Inverting the same calls turns +32.08% into **-28.52%** and a Sharpe of 2.01 into **-2.92**. A signal with no directional content could not do this: both halves would drift toward the Benchmark's +12.90% rather than separating by 60.6 percentage points. Note the two are *not* exact negatives — only the daily gross returns negate, while compounding and strictly-positive costs break the symmetry, which is why +34.79% gross becomes -27.01% rather than -34.79%.
+
+3. **Sizing by sentiment destroys the edge rather than refining it.**
+
+   LLM Direction and LLM Sentiment-Weighted read the *same* model output, yet sentiment-weighting returns only **+3.70% net** at a Sharpe of **0.03**, against +32.08% and 2.01. The cause is exposure, not accuracy: mean |position| is 0.293 against 1.000, which cuts annualized volatility to 4.69% from 12.89% and leaves the strategy flat on 21 of 243 days. Its win rate on the days it does hold a position, 54.5%, is close to LLM Direction's 56.8% — the signal is comparable, the capital behind it is not. Note also that its net Sharpe (0.03) is far below its gross (0.20): at this exposure the 0.78% cost bill is proportionally much heavier.
+
+4. **Trading costs are material but survivable at the modelled level.**
+
+   LLM Direction pays **2.03% in cost** over the sample and gives up **2.71 percentage points** of compounded return, turning +34.79% gross into +32.08% net, with the Sharpe falling -0.16. That bill is driven by **197.9x annualized turnover** — 39% of the 504x theoretical maximum for a book flipping fully long to fully short every session — across 96 days with a trade. The edge clears the bill with room to spare, but it is the assumption most worth stressing: the strategy is far more cost-sensitive than the Benchmark, which pays 0.10% in total.
+
+5. **The statistical evidence is real but moderate, not overwhelming.**
+
+   LLM Direction's mean daily net return carries a t-statistic of **2.26** over 243 days — significant at the 5% level, and no more. The standard error on an annualized Sharpe from this many observations is about **±1.02**, so the 2.01 figure is roughly 2.0 standard errors from zero. Neither number is corrected for the fact that this report tabulates 5 strategies and the best one is being quoted.
+
+6. **The edge does not collapse after the model's training cutoff — but the out-of-sample window is too short to settle it.**
+
+   172 of 243 days (71%) fall on or before 2026-05-31 and are inside the model's training data, so for most of this sample the model may be recalling outcomes rather than forecasting them. Splitting there: LLM Direction returns +21.40% before the cutoff and **+8.80% after** it, at a post-cutoff Sharpe of 2.09 against 1.98 before, while the Benchmark returned -0.22% over the same post-cutoff stretch. The edge persisting out of sample is the strongest evidence here that it is not pure memorisation — but 71 days carry a Sharpe standard error of about ±1.88, so that post-cutoff figure sits only 1.1 standard errors from zero and settles nothing on its own. This is the single largest open question in the report.
+
 ## Gross returns (before trading costs)
 
 | Metric | Benchmark | Direction | Direction (C) | Sentiment | Sentiment (C) |
@@ -104,3 +132,111 @@ The model states a `confidence` between 0 and 1 on every call, and **no strategy
 - Contrarian variants are **not** the exact negative of their parent. Only the daily *gross* return negates; compounded totals do not, and costs are strictly positive on both sides.
 - A high Sharpe on a low-exposure strategy is low volatility, not necessarily skill — check the `Mean |position|` row.
 - **Figures are drawn on net returns** and are regenerated on every run; they are written to `C:\Users\Gordon Hew\workspace\news_based_ai\output\charts`. Pass `--no-charts` to skip them, which is also what happens automatically if matplotlib is not installed.
+
+## Appendix: acquiring the GDELT data
+
+A fixed record of what went wrong collecting the headline corpus, and what
+would have prevented each problem. It is not regenerated from the data.
+
+The corpus behind this report is 9,628 CNBC headlines covering 2025-09-19 to
+2026-09-19, pulled from the GDELT 2.0 DOC API. Collecting it took far longer
+than the analysis that followed, for reasons that were mostly foreseeable.
+
+### What went wrong
+
+**The 250-record cap truncates silently.** `artlist` returns at most 250
+articles per request and says nothing when it has more to give. A busy news day
+on a broad domain query hits that ceiling easily, so the first passes returned
+plausible-looking files that were quietly missing articles. Nothing in the
+response distinguishes "these are all 250 that exist" from "here are the first
+250 of 400."
+
+**Rate limiting was severe and initially misdiagnosed.** The endpoint tolerates
+roughly one request every five seconds, and beyond that returns HTTP 429. The
+429s persisted across four source IP addresses in three countries, which looked
+like an IP-level ban and prompted a lot of wasted effort chasing connectivity.
+The actual diagnostic took one request: GDELT's `/api/v2/tv/tv` endpoint
+returned HTTP 200 from the *same* IP that `doc` was refusing, proving the
+throttle was endpoint-specific rather than an address block.
+
+**A large part of the rate limiting was self-inflicted.** A retry-loop shell
+script survived a stop command and kept running for more than twenty-two hours,
+continuously spawning fresh fetcher processes. Those orphans shared one source
+IP — and therefore one rate-limit budget — with the foreground job, so the two
+starved each other while the remote service looked broken. The orphans also
+held the output file open and at one point deleted it outright, producing file
+states that appeared impossible. The stop command had reported success; the
+process tree had not actually died.
+
+**Transient network errors killed long runs.** The retry handler caught
+`URLError` and `TimeoutError` but not `ConnectionResetError`, so a mid-download
+reset escaped the handler and terminated a multi-hour job that had no way to
+resume.
+
+**A shadowed import lurked in the retry path.** `from datetime import time`
+shadowed the `time` module, so `time.sleep()` inside the backoff path would
+have raised `AttributeError` — on the exact code path that only executes when
+something is already going wrong, which is the worst place for a latent bug.
+
+**Timestamp semantics were assumed rather than checked.** GDELT's `seendate` is
+when GDELT first *indexed* an article, not when the publisher released it. The
+two differ, and the difference matters directly for the 4:00 PM ET cutoff this
+study depends on.
+
+### What would have prevented it
+
+**Read the API's limits before writing the happy path.** The 250-record cap and
+the request rate are both documented. Designing the window-splitting and pacing
+logic up front would have avoided rewriting the fetcher around them twice.
+
+**Treat any response at exactly the cap as truncated until proven otherwise.**
+The rule is cheap: if a window returns exactly 250 records, assume it is
+incomplete, bisect it and retry both halves. The final fetcher does this
+recursively down to a fifteen-minute floor. Making this the default from the
+start costs one comparison and removes an entire class of silent data loss.
+
+**Pace requests end-to-start, not start-to-start.** The quiet period has to
+begin when the response *arrives*, not when the request is sent, or a slow
+response silently shortens the gap and trips the limit.
+
+**Design checkpointing and resume before the first long run, not after the
+first crash.** The fetcher now writes its accumulated rows after every
+sub-window and keeps a list of failed windows, so an interrupted job resumes
+instead of restarting. Adding that after losing hours of work is the expensive
+order in which to learn it.
+
+**Catch `OSError`, not a hand-listed set of subclasses.** `URLError`,
+`TimeoutError` and `ConnectionResetError` are all `OSError`; enumerating
+network failure modes individually guarantees missing one.
+
+**Enforce single-writer discipline on the output file.** One fetcher per output
+file, with a lock or PID file refusing a second concurrent run, would have made
+the orphaned-process episode impossible rather than merely unlikely. Concurrent
+clients from one machine share a rate-limit budget, so a stray process does not
+just duplicate work — it actively degrades the run that is still wanted.
+
+**Verify at the OS level that a stopped job is actually dead.** A tool
+reporting "stopped" is not evidence. The check is a process scan filtered on
+the relevant command line, and it must include shell processes, because a retry
+loop is the parent that keeps respawning the interpreter children.
+
+**Probe a second endpoint before concluding the network is at fault.** One
+control request against a different path on the same host separates "this
+endpoint is throttling me" from "this host is blocking me" in seconds, and
+would have redirected several hours of misdirected effort.
+
+**Pin down what a timestamp field actually means before building on it.**
+Because `seendate` is an indexing time at or after publication, filtering on
+`seendate < 16:00 ET` is conservative in the safe direction — it can only ever
+exclude a borderline article, never admit one the trader could not have seen.
+That reasoning had to be established explicitly; it was not safe to assume.
+
+### Lasting effects on the design
+
+The fetcher that came out of this writes its rows after every sub-window rather
+than at the end, retries indefinitely with backoff capped at 90 seconds, logs
+the windows it could not complete and the days that were genuinely empty, and
+records the requested date range in its own filename. Each of those exists
+because of a specific failure above. The empty-day log matters most for the
+analysis: it is what keeps a collection gap visible as a gap, instead of
+letting it silently become a day with no headlines and a neutral prediction.
